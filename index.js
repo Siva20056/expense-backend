@@ -7,12 +7,19 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- Database Connection ---
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("MongoDB Connected"))
   .catch(err => console.error("MongoDB Fail:", err));
 
-// --- Schema ---
+// --- 1. Schemas ---
+// User Schema (For Login)
+const UserSchema = new mongoose.Schema({
+    phone: { type: String, required: true, unique: true },
+    pin: { type: String, required: true } // Simple 4 digit PIN
+});
+const User = mongoose.model('User', UserSchema);
+
+// Expense Schema (For Data)
 const ExpenseSchema = new mongoose.Schema({
     userPhone: String,
     amount: Number,
@@ -23,16 +30,14 @@ const ExpenseSchema = new mongoose.Schema({
 });
 const Expense = mongoose.model('Expense', ExpenseSchema);
 
-// --- Parser Logic ---
+// --- 2. Parser Logic (Same as before) ---
 function parseNotification(text) {
     const msg = text.toLowerCase().replace(/,/g, ''); 
     const amountMatch = msg.match(/(?:rs\.?|inr|₹)\s*([\d.]+)/);
     const amount = amountMatch ? parseFloat(amountMatch[1]) : 0;
-    
     const merchantMatch = msg.match(/(?:paid to|sent to)\s+(.+?)(?:\s+(?:via|using|on|successful)|$)/);
     let merchant = merchantMatch ? merchantMatch[1].trim() : "Unknown";
     if (merchant.includes('@')) merchant = merchant.split('@')[0];
-
     return { amount, merchant };
 }
 
@@ -44,10 +49,27 @@ function getCategory(merchant) {
     return 'General';
 }
 
-// --- Routes ---
-app.get('/', (req, res) => res.send('Expense API Live'));
-app.get('/ping', (req, res) => res.send('Pong')); // Keep-Alive Route
+// --- 3. Routes ---
 
+// A. LOGIN / REGISTER
+app.post('/api/auth/login', async (req, res) => {
+    const { phone, pin } = req.body;
+    const user = await User.findOne({ phone });
+    
+    if (!user) {
+        // First time? Let's auto-register them (Simple logic for MVP)
+        const newUser = await User.create({ phone, pin });
+        return res.json({ success: true, user: newUser, message: "New account created!" });
+    }
+
+    if (user.pin === pin) {
+        return res.json({ success: true, user, message: "Welcome back!" });
+    } else {
+        return res.status(401).json({ success: false, message: "Wrong PIN" });
+    }
+});
+
+// B. SYNC DATA (MacroDroid)
 app.post('/api/sync', async (req, res) => {
     const { user_phone, message, app_name, secret } = req.body;
     if (secret !== process.env.API_SECRET) return res.status(403).send("Invalid Secret");
@@ -62,11 +84,14 @@ app.post('/api/sync', async (req, res) => {
     res.send("No amount found");
 });
 
+// C. FETCH DATA (Frontend)
 app.get('/api/expenses', async (req, res) => {
     const { phone } = req.query;
     const expenses = await Expense.find({ userPhone: phone }).sort({ date: -1 });
     res.json(expenses);
 });
+
+app.get('/ping', (req, res) => res.send('Pong')); 
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
